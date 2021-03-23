@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [ mylar-validator ]
+
+jobs:
+  build-and-push:
+    name: Build (Validator)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Fetch
+        run: git fetch --prune --unshallow
+
+      - name: Preparation
+        id: prep
+        run: |
+          TAGS="validator-${{ github.sha }}"
+          TAGS="$TAGS,validator-latest"
+          echo ::set-output name=tags::${TAGS}
+
+      - uses: whoan/docker-build-with-cache-action@v5
+        with:
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.CR_PAT }}
+          registry: ghcr.io
+          image_name: ${{ github.repository }}
+          image_tag: ${{ steps.prep.outputs.tags }}
+          dockerfile: .github/workflows/Dockerfile

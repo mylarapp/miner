@@ -1,0 +1,68 @@
+# Build stage: build-base
+FROM erlang:22.3.2-alpine as build-base
+
+RUN apk add --no-cache --update \
+    git tar build-base linux-headers autoconf automake libtool pkgconfig \
+    dbus-dev bzip2 bison flex gmp-dev cmake lz4 libsodium-dev openssl-dev \
+    sed wget curl
+
+# Install Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Build stage: build-dummy
+FROM build-base as build-dummy
+
+WORKDIR /usr/src/miner
+
+ENV CC=gcc CXX=g++ CFLAGS="-U__sun__" \
+    ERLANG_ROCKSDB_OPTS="-DWITH_BUNDLE_SNAPPY=ON -DWITH_BUNDLE_LZ4=ON" \
+    ERL_COMPILER_OPTIONS="[deterministic]" \
+    PATH="/root/.cargo/bin:$PATH" \
+    RUSTFLAGS="-C target-feature=-crt-static"
+
+# Copy our dependency config only
+COPY ./rebar* /usr/src/miner/
+
+# Compile dependencies only to make things more repeatable
+RUN ./rebar3 as docker_val do compile
+
+# Build stage: build-main
+FROM build-dummy as build-main
+
+WORKDIR /usr/src/miner
+
+ENV CC=gcc CXX=g++ CFLAGS="-U__sun__" \
+    ERLANG_ROCKSDB_OPTS="-DWITH_BUNDLE_SNAPPY=ON -DWITH_BUNDLE_LZ4=ON" \
+    ERL_COMPILER_OPTIONS="[deterministic]" \
+    PATH="/root/.cargo/bin:$PATH" \
+    RUSTFLAGS="-C target-feature=-crt-static"
+
+# Copy the rest of the project code
+COPY . /usr/src/miner/
+
+# Compile dependencies to make things more repeatable
+RUN ./rebar3 as docker_val tar
+RUN mkdir -p /opt/docker/update
+RUN tar -zxvf _build/docker_val/rel/*/*.tar.gz -C /opt/docker
+
+RUN wget -O /opt/docker/update/genesis https://snapshots.helium.wtf/genesis.mainnet
+
+FROM erlang:22.3.2-alpine as runner
+
+RUN apk add --no-cache --update ncurses dbus gmp libsodium gcc
+RUN ulimit -n 64000
+
+EXPOSE 8080 4467
+
+WORKDIR /opt/miner
+
+ENV COOKIE=miner \
+    # Write files generated during startup to /tmp
+    RELX_OUT_FILE_PATH=/tmp \
+    # add miner to path, for easy interactions
+    PATH=$PATH:/opt/miner/bin
+
+COPY --from=build-main /opt/docker /opt/miner
+
+ENTRYPOINT ["/opt/miner/bin/miner"]
+CMD ["foreground"]
